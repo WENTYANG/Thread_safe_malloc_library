@@ -1,10 +1,11 @@
 #include "my_malloc.h"
 
-block *head;
+// block *head;
 unsigned long data_size = 0;
 unsigned long free_data_size = 0;
 pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
-block * head_lock = NULL;
+block *head_lock = NULL;
+__thread block *head_nolock = NULL;
 
 void *ts_malloc_lock(size_t size){
   pthread_mutex_lock(&lock);
@@ -19,62 +20,14 @@ void ts_free_lock(void *ptr){
 };
 
 void *ts_malloc_nolock(size_t size){
-  void *ptr =bf_malloc(size, 0, &head_lock);
+  void *ptr =bf_malloc(size, 0, &head_nolock);
   return ptr;
 }
 void ts_free_nolock(void *ptr){
-  bf_free(ptr, &head_lock);
+  bf_free(ptr, &head_nolock);
 }
 
-void printFreeList()
-{
-  unsigned long len = 0;
-  for (block *ptr = head; ptr != NULL; ptr = ptr->next)
-  {
-    len++;
-  }
-  printf("Free list length = %ld\n", len);
-}
-
-void printLinkedList()
-{
-  int len = 0;
-  for (block *ptr = head; ptr != NULL; ptr = ptr->next)
-  {
-    printf("node: size(%zu), prev(%p), cur_address(%p), next(%p)\n", ptr->size, ptr->prev, ptr, ptr->next);
-    len++;
-  }
-  printf("the length of list is (%d)\n", len);
-  printf("---------------------------------------------------\n");
-  printf("\n");
-}
-
-void *ff_malloc(size_t size)
-{
-  //Find free block using first fit strategy
-  //printFreeList();
-  //printf("FF with size = %ld\n", size);
-  block *bptr;
-  for (bptr = head; bptr != NULL; bptr = bptr->next)
-  {
-    if (bptr->size >= size)
-    {
-      //printf("Find block addr = %p with size = %ld\n", bptr, bptr->size);
-      return alloc_free(size, bptr);
-    }
-  }
-
-  //No available free block
-  bptr = sbrk(sizeof(block) + size);
-  //printf("Sbrk new block at %p, with size = %ld\n", bptr, size);
-  bptr->size = size;
-  bptr->prev = NULL;
-  bptr->next = NULL;
-  data_size += sizeof(block) + size;
-  return bptr + 1;
-}
-
-void *alloc_free(size_t size, block *bptr)
+void *alloc_free(size_t size, block *bptr, block** head)
 {
   if (bptr->size > size + sizeof(block)) //Check if block needs to be splitted
   {
@@ -99,7 +52,7 @@ void *alloc_free(size_t size, block *bptr)
   return bptr + 1;
 }
 
-void ff_free(void *ptr, block* head)
+void ff_free(void *ptr, block** head)
 {
   //printf("Free block addr = %p\n", ptr);
   block *bptr = (block *)ptr - 1;
@@ -107,7 +60,7 @@ void ff_free(void *ptr, block* head)
   insertBlock(bptr, head);
 }
 
-void addBlock(block *prev, block *next, block *toadd, block* head)
+void addBlock(block *prev, block *next, block *toadd, block** head)
 {
   //printf("Add block addr = %p\n", toadd);
   toadd->prev = prev;
@@ -116,19 +69,19 @@ void addBlock(block *prev, block *next, block *toadd, block* head)
     prev->next = toadd;
   if (next)
     next->prev = toadd;
-  if (head == NULL || head == next)
-    head = toadd;
+  if (*head == NULL || *head == next)
+    *head = toadd;
   free_data_size += sizeof(block) + toadd->size;
 }
 
-void removeBlock(block *bptr, block* head)
+void removeBlock(block *bptr, block** head)
 {
   //printf("Remove block addr = %p\n", bptr);
-  if (head == bptr)
+  if (*head == bptr)
   {
-    head = bptr->next;
-    if (head)
-      head->prev = NULL;
+    *head = bptr->next;
+    if (*head)
+      (*head)->prev = NULL;
   }
   if (bptr->prev)
     bptr->prev->next = bptr->next;
@@ -137,10 +90,10 @@ void removeBlock(block *bptr, block* head)
   free_data_size -= sizeof(block) + bptr->size;
 }
 
-void insertBlock(block *toinsert, block* head)
+void insertBlock(block *toinsert, block** head)
 {
   //printf("Insert block addr = %p\n", toinsert);
-  block **cur = &head;
+  block **cur = head;
   block *prev = NULL;
 
   //find insert position;
@@ -184,12 +137,12 @@ block *merge(block *b1, block *b2)
   return b2;
 }
 
-void *bf_malloc(size_t size, int with_lock, block * head)
+void *bf_malloc(size_t size, int with_lock, block** head)
 {
   //Find best block using first fit strategy
   block *bptr;
   block *min = NULL;
-  for (bptr = head; bptr != NULL; bptr = bptr->next)
+  for (bptr = *head; bptr != NULL; bptr = bptr->next)
   {
     if (bptr->size == size)
     {
@@ -204,16 +157,16 @@ void *bf_malloc(size_t size, int with_lock, block * head)
   }
   if (min != NULL)
   {
-    return alloc_free(size, min);
+    return alloc_free(size, min, head);
   }
   //No available free block
   if(with_lock==1){
+    bptr = sbrk(sizeof(block) + size);
+  }
+  else{
     pthread_mutex_lock(&lock);
     bptr = sbrk(sizeof(block) + size);
     pthread_mutex_unlock(&lock);
-  }
-  else{
-    bptr = sbrk(sizeof(block) + size);
   }
   //printf("Sbrk new block at %p, with size = %ld\n", bptr, size);
   bptr->size = size;
@@ -223,7 +176,7 @@ void *bf_malloc(size_t size, int with_lock, block * head)
   return bptr + 1;
 }
 
-void bf_free(void *ptr, block* head)
+void bf_free(void *ptr, block** head)
 {
   return ff_free(ptr, head);
 }
